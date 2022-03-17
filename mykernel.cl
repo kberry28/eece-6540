@@ -1,47 +1,35 @@
-__kernel void pi_calc( int floats_per_item, __local float local_result, 
+/*kernel is given the pointer on-device memory where its summed result will go*/
+/*each work item will put its result in its local index*/
+
+__kernel void pi_calc(int floats_per_item, int local_size, __local float* local_result, 
      __global float* global_result) {
 
-   /* initialize local summation */
-   /*so this local variable is visible to all kernels running on the device, right?*/
-   /*in that case do we need an array of as many floats as total items/work items local?*/
-   local_result = 0;
-
-   /* Make sure previous processing has completed */
-   /**is this necessary now?**/
-   barrier(CLK_LOCAL_MEM_FENCE);
-
-   //use for calculating fractions in each work item
+   //global ID is work item from entire input set
    int index = get_global_id(0);
+   int local = get_local_id(0);
 
-   /* Iterate through characters in text */
-   for(int i=1; i<floats_per_item; i++) {
-
-
-      /* Check for 'that' */
-      if(all(check_vector.s0123))
-         atomic_inc(local_result);
-
-      /* Check for 'with' */
-      if(all(check_vector.s4567))
-         atomic_inc(local_result + 1);
-
-      /* Check for 'have' */
-      if(all(check_vector.s89AB))
-         atomic_inc(local_result + 2);
-
-      /* Check for 'from' */
-      if(all(check_vector.sCDEF))
-         atomic_inc(local_result + 3);
+   /* add-sub up 4 consecutive fractions and save value in local mem array*/
+   /*location in local mem array is local_id*/
+   /*value to calculate fraction terms is global_id*/
+   for(int i=0; i<floats_per_item; i++) {
+   	if(i%2)
+   		//if i is odd, subtract
+   		local_result[local]-= 1/(8*index+i*2+1);
+   	else
+   		//if i is even, add
+   		local_result[local]+= 1/(8*index+i*2+1);
    }
 
-   /* Make sure local processing has completed */
+   /* Make sure local processing for the work group has completed */
+
    barrier(CLK_GLOBAL_MEM_FENCE);
 
    /* Perform global reduction */
-   if(get_local_id(0) == 0) {
-      atomic_add(global_result, local_result[0]);
-      atomic_add(global_result + 1, local_result[1]);
-      atomic_add(global_result + 2, local_result[2]);
-      atomic_add(global_result + 3, local_result[3]);
+   /*first work item now sums the local memory array and puts it in its "bucket" in global array*/
+   if(local == 0) {
+      int bucket = index/local_size;
+   	for (int c=0, c<local_size,c++)
+      /*this global_result is the global memory array buffer ON THE DEVICE*/
+      global_result[bucket]+=local_result[c]);
    }
 }

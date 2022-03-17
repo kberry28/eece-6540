@@ -20,7 +20,6 @@ void cleanup();
 #define DEVICE_NAME_LEN 128
 static char dev_name[DEVICE_NAME_LEN];
 
-#define TEXT_FILE "kafka.txt"
 
 int main()
 {
@@ -35,21 +34,23 @@ int main()
     cl_kernel kernel = NULL;
 
     cl_uint num_comp_units;
-    size_t global_size;
+    //local size is how many items can be run in parallel on a compute unit (i.e. work group size)
+    //this is determined by the device
     size_t local_size;
+    int total_terms=128;
+    int floats_per_item=4;
+    /*this gives the total number of work items*/
+    int global_size=total_terms/floats_per_item;
 
 
     FILE *fp;
     char fileName[] = "./mykernel.cl";
     char *source_str;
     size_t source_size;
-
-    int result[4] = {0, 0, 0, 0};
-    char pattern[16] = {'t','h','a','t','w','i','t','h','h','a','v','e','f','r','o','m'};
-    FILE *text_handle;
-    char *text;
-    size_t text_size;
-    int chars_per_item;
+    //this var will sum the global results from the compute units 
+    float global_sum=0;
+    /*this will be the global_size/local_size to give # of terms to sum in final reduction*/
+    int buckets;
 
 #ifdef __APPLE__
     /* Get Platform and Device Info */
@@ -86,6 +87,8 @@ int main()
 #endif
 
     /* Determine global size and local size */
+    /*CL_DEVICE_MAX_COMPUTE_UNITS is number of parallel compute units available*/
+    /*a work group executes on a single compute unit*/
     clGetDeviceInfo(device_id, CL_DEVICE_MAX_COMPUTE_UNITS,
       sizeof(num_comp_units), &num_comp_units, NULL);
     printf("num_comp_units=%u\n", num_comp_units);
@@ -114,7 +117,10 @@ int main()
       exit(1);
     }
     source_str = (char*)malloc(MAX_SOURCE_SIZE);
+    //returns number of items successfully read of size 1 (char
+    //reads the source file pointer into source_str
     source_size = fread(source_str, 1, MAX_SOURCE_SIZE, fp);
+    //closer kernel source file
     fclose(fp);
 
     /* Create Kernel Program from the source */
@@ -145,43 +151,31 @@ int main()
     }
 
     /* Create OpenCL Kernel */
-    kernel = clCreateKernel(program, "string_search", &ret);
+    kernel = clCreateKernel(program, "pi_calc", &ret);
     if (ret != CL_SUCCESS) {
       printf("Failed to create kernel.\n");
       exit(1);
     }
 
-    /* Read text file and place content into buffer */
-    text_handle = fopen(TEXT_FILE, "r");
-    if(text_handle == NULL) {
-       perror("Couldn't find the text file");
-       exit(1);
-    }
-    fseek(text_handle, 0, SEEK_END);
-    text_size = ftell(text_handle)-1;
-    rewind(text_handle);
-    text = (char*)calloc(text_size, sizeof(char));
-    fread(text, sizeof(char), text_size, text_handle);
-    fclose(text_handle);
-    chars_per_item = text_size / global_size + 1;
-
-    /* Create buffers to hold the text characters and count */
-    cl_mem text_buffer = clCreateBuffer(context, CL_MEM_READ_ONLY |
-          CL_MEM_COPY_HOST_PTR, text_size, text, &ret);
-    if(ret < 0) {
-       perror("Couldn't create a buffer");
-       exit(1);
-    };
+    /*this is the number of work groups*/
+    buckets = global_size/local_size;
+    printf("Number of global buckets is: %i",buckets);
+    /*this is where the global memory array from the device will be read to*/
+    float result[buckets];
+    /*this is the buffer for the global memory from the device*/
     cl_mem result_buffer = clCreateBuffer(context, CL_MEM_READ_WRITE |
-          CL_MEM_COPY_HOST_PTR, sizeof(result), result, NULL);
-
+    CL_MEM_COPY_HOST_PTR, sizeof(result), result, NULL);
+    
     ret = 0;
-    /* Create kernel argument */
-    ret = clSetKernelArg(kernel, 0, sizeof(pattern), pattern);
-    ret |= clSetKernelArg(kernel, 1, sizeof(cl_mem), &text_buffer);
-    ret |= clSetKernelArg(kernel, 2, sizeof(chars_per_item), &chars_per_item);
-    ret |= clSetKernelArg(kernel, 3, 4 * sizeof(int), NULL);
-    ret |= clSetKernelArg(kernel, 4, sizeof(cl_mem), &result_buffer);
+    /* Create kernel arguments */
+    /* how many terms to sum*/
+    ret = clSetKernelArg(kernel, 0, sizeof(floats_per_item), &floats_per_item);
+    /*how many work items are in the current work group*/
+    ret |= clSetKernelArg(kernel, 1, sizeof(int), &local_size);
+    /*local memory array to hold summation from each work item in the work group*/
+    ret |= clSetKernelArg(kernel, 2, local_size * sizeof(float), NULL);
+   	
+    ret |= clSetKernelArg(kernel, 3, sizeof(cl_mem), &result_buffer);
     if(ret < 0) {
        printf("Couldn't set a kernel argument");
        exit(1);
@@ -196,7 +190,7 @@ int main()
        exit(1);
     }
 
-    /* Read and print the result */
+    /* Read global memory buffer from device and save it in the global result array*/
     ret = clEnqueueReadBuffer(command_queue, result_buffer, CL_TRUE, 0,
        sizeof(result), &result, 0, NULL, NULL);
     if(ret < 0) {
@@ -204,17 +198,17 @@ int main()
        exit(1);
     }
 
+    /**add up global array to get the total and multiply by 4 to get Pi**/
     printf("\nResults: \n");
-    printf("Number of occurrences of 'that': %d\n", result[0]);
-    printf("Number of occurrences of 'with': %d\n", result[1]);
-    printf("Number of occurrences of 'have': %d\n", result[2]);
-    printf("Number of occurrences of 'from': %d\n", result[3]);
+    for(intb=0;b<buckets;b++){
+      printf("workgroup %i result: %f\n", b, result[b]);
+      global_sum+=result[b];
+    }
+    
+    printf("Pi is calculated as: %f\n", global_sum*4);
 
 
     /* free resources */
-    free(text);
-
-    clReleaseMemObject(text_buffer);
     clReleaseMemObject(result_buffer);
     clReleaseCommandQueue(command_queue);
     clReleaseKernel(kernel);
